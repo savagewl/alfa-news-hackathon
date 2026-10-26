@@ -1,0 +1,45 @@
+[project]
+name = "alfa-news-backend"
+version = "0.1.0"
+description = "FastAPI backend for Alfa News"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "alembic>=1.16,<2",
+    "argon2-cffi>=25.1,<26",
+    "asyncpg>=0.30,<1",
+    "email-validator>=2.2,<3",
+    "fastapi>=0.115,<1",
+    "feedparser>=6.0.12,<7",
+    "defusedxml>=0.7.1,<1",
+    "httpx2>=2.14.0,<3",
+    "tzdata>=2025.2",
+    "pydantic-settings>=2.9,<3",
+    "pyjwt>=2.10,<3",
+    "python-multipart>=0.0.20,<1",
+    "sqlalchemy[asyncio]>=2.0.41,<2.1",
+    "uvicorn[standard]>=0.34,<1",
+    "pgvector>=0.5.1",
+    "pymupdf>=1.26,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<10",
+    "ruff>=0.11,<1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = [".cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# Диагностические скрипты делают sys.path bootstrap перед импортами проекта.
+"scripts/*.py" = ["E402"]

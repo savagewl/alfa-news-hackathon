@@ -1,0 +1,7 @@
+[
+  {"code":"rbc","name":"РБК","site_url":"https://www.rbc.ru","feed_code":"rbc-news","url":"https://rssexport.rbc.ru/rbcnews/news/30/full.rss","interval":90,"allowed_hosts":["rssexport.rbc.ru"],"adapter":"rbc","store_content":true},
+  {"code":"kommersant","name":"Коммерсантъ","site_url":"https://www.kommersant.ru","feed_code":"kommersant-news","url":"https://www.kommersant.ru/rss/news.xml","interval":120,"allowed_hosts":["www.kommersant.ru"],"adapter":"generic","store_content":true},
+  {"code":"vedomosti","name":"Ведомости","site_url":"https://www.vedomosti.ru","feed_code":"vedomosti-news","url":"https://www.vedomosti.ru/rss/news.xml","interval":120,"allowed_hosts":["www.vedomosti.ru"],"adapter":"generic","store_content":true},
+  {"code":"bfm","name":"Business FM","site_url":"https://www.bfm.ru","feed_code":"bfm-news","url":"https://www.bfm.ru/news.rss","interval":120,"allowed_hosts":["www.bfm.ru"],"adapter":"generic","store_content":true},
+  {"code":"klerk","name":"Клерк","site_url":"https://www.klerk.ru","feed_code":"klerk-news","url":"https://www.klerk.ru/export/news.rss","interval":300,"allowed_hosts":["www.klerk.ru"],"adapter":"generic","default_topics":["business","taxes"],"store_content":true}
+]

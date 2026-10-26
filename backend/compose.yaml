@@ -1,0 +1,137 @@
+name: alfa-news
+
+x-app: &app
+  image: alfa-news-backend:local
+  build: .
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment:
+    APP_NAME: ${APP_NAME:-Alfa News API}
+    DEBUG: ${DEBUG:-false}
+    ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-true}
+    ANALYTICS_MAX_BYTES: ${ANALYTICS_MAX_BYTES:-52428800}
+    ANALYTICS_MAX_PAGES: ${ANALYTICS_MAX_PAGES:-100}
+    ANALYTICS_PARSE_TIMEOUT_SECONDS: ${ANALYTICS_PARSE_TIMEOUT_SECONDS:-900}
+    ANALYTICS_OCR_DPI: ${ANALYTICS_OCR_DPI:-200}
+    ANALYTICS_EMBEDDINGS_ENABLED: ${ANALYTICS_EMBEDDINGS_ENABLED:-true}
+    AI_EMBED_OLLAMA_HOST: ${DOCKER_EMBED_OLLAMA_HOST:-http://ollama:11434}
+    AI_EMBED_MODEL: ${AI_EMBED_MODEL:-bge-m3}
+    AI_EMBED_DIM: ${AI_EMBED_DIM:-1024}
+    AI_LLM_API_BASE: ${AI_LLM_API_BASE:-}
+    AI_LLM_API_KEY: ${AI_LLM_API_KEY:-}
+    AI_LLM_MODEL: ${AI_LLM_MODEL:-google/gemma-4-26b-a4b-it}
+    AI_LLM_MOCK: ${AI_LLM_MOCK:-false}
+    AI_LLM_TIMEOUT_SECONDS: ${AI_LLM_TIMEOUT_SECONDS:-120}
+    AI_LLM_MAX_RETRIES: ${AI_LLM_MAX_RETRIES:-2}
+    AI_LLM_REASONING_BUDGET: ${AI_LLM_REASONING_BUDGET:-}
+    AI_INSIGHT_MAX_CYCLES: ${AI_INSIGHT_MAX_CYCLES:-2}
+    AI_INTERPRETATION_TIMEOUT_SECONDS: ${AI_INTERPRETATION_TIMEOUT_SECONDS:-90}
+    AI_INTERPRETATION_CONCURRENCY: ${AI_INTERPRETATION_CONCURRENCY:-2}
+    AI_INTERPRETATION_CACHE_HOURS: ${AI_INTERPRETATION_CACHE_HOURS:-24}
+    AI_BANK_DOCUMENT_IDS: ${AI_BANK_DOCUMENT_IDS:-[]}
+    AI_EMBED_GATEWAY_ENABLED: ${AI_EMBED_GATEWAY_ENABLED:-true}
+    AI_EMBED_GATEWAY_MODEL: ${AI_EMBED_GATEWAY_MODEL:-}
+    AI_RERANK_MODEL: ${AI_RERANK_MODEL:-}
+    AI_ASSESSMENT_ENABLED: ${AI_ASSESSMENT_ENABLED:-true}
+    AI_ASSESSMENT_CONCURRENCY: ${AI_ASSESSMENT_CONCURRENCY:-2}
+    AI_ASSESSMENT_BANK_PASSAGES: ${AI_ASSESSMENT_BANK_PASSAGES:-3}
+    AI_NEWS_WORKER_ENABLED: ${AI_NEWS_WORKER_ENABLED:-true}
+    AI_NEWS_WORKER_POLL_SECONDS: ${AI_NEWS_WORKER_POLL_SECONDS:-2}
+    AI_NEWS_WORKER_BATCH_SIZE: ${AI_NEWS_WORKER_BATCH_SIZE:-8}
+    AI_NEWS_WORKER_CONCURRENCY: ${AI_NEWS_WORKER_CONCURRENCY:-2}
+    AI_NEWS_WORKER_LEASE_SECONDS: ${AI_NEWS_WORKER_LEASE_SECONDS:-300}
+    AI_NEWS_WORKER_MAX_ATTEMPTS: ${AI_NEWS_WORKER_MAX_ATTEMPTS:-5}
+    AI_NEWS_WORKER_RETRY_SECONDS: ${AI_NEWS_WORKER_RETRY_SECONDS:-30}
+    AI_NEWS_WORKER_CONFIG_RETRY_SECONDS: ${AI_NEWS_WORKER_CONFIG_RETRY_SECONDS:-300}
+    AI_PROFILE_ENABLED: ${AI_PROFILE_ENABLED:-true}
+    AI_PROFILE_POLL_SECONDS: ${AI_PROFILE_POLL_SECONDS:-2}
+    AI_PROFILE_BATCH_SIZE: ${AI_PROFILE_BATCH_SIZE:-8}
+    AI_PROFILE_RETRY_SECONDS: ${AI_PROFILE_RETRY_SECONDS:-30}
+    AI_PROFILE_LEASE_SECONDS: ${AI_PROFILE_LEASE_SECONDS:-300}
+    RSS_ENABLED: ${RSS_ENABLED:-true}
+    ARTICLE_CONTENT_ENABLED: ${ARTICLE_CONTENT_ENABLED:-true}
+    ARTICLE_CONTENT_CONCURRENCY: ${ARTICLE_CONTENT_CONCURRENCY:-2}
+    ARTICLE_CONTENT_POLL_SECONDS: ${ARTICLE_CONTENT_POLL_SECONDS:-2}
+    RSS_CONCURRENCY: ${RSS_CONCURRENCY:-4}
+    RSS_REQUEST_TIMEOUT_SECONDS: ${RSS_REQUEST_TIMEOUT_SECONDS:-30}
+    RSS_MAX_RESPONSE_BYTES: ${RSS_MAX_RESPONSE_BYTES:-5242880}
+    RSS_LEASE_SECONDS: ${RSS_LEASE_SECONDS:-120}
+    RSS_SNAPSHOT_RETENTION_DAYS: ${RSS_SNAPSHOT_RETENTION_DAYS:-7}
+    RSS_RUN_RETENTION_DAYS: ${RSS_RUN_RETENTION_DAYS:-30}
+    JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (at least 32 characters)}
+    JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-1440}
+    CSV_IMPORT_MAX_BYTES: ${CSV_IMPORT_MAX_BYTES:-104857600}
+    CSV_IMPORT_MAX_ROWS: ${CSV_IMPORT_MAX_ROWS:-100000}
+    POSTGRES_HOST: db
+    POSTGRES_PORT: 5432
+    POSTGRES_USER: ${POSTGRES_USER:-alfa_news}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alfa_news_local}
+    POSTGRES_DB: ${POSTGRES_DB:-alfa_news}
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-alfa_news}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alfa_news_local}
+      POSTGRES_DB: ${POSTGRES_DB:-alfa_news}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    healthcheck:
+      disable: true
+
+  api:
+    <<: *app
+    ports:
+      - "0.0.0.0:${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Эмбеддинги BGE-M3 для новостей и аналитики банка: на шлюзе хакатона модели нет,
+  # поэтому Ollama живёт рядом с API. Модель скачивается один раз в volume ollama_data.
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  ollama-init:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "${AI_EMBED_MODEL:-bge-m3}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  postgres_data:
+  ollama_data:
