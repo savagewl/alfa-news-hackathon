@@ -1,6 +1,12 @@
 from app.services.llm.config import ServicesSettings, get_services_settings
 from app.services.llm.embeddings import EmbeddingsClient, get_embedder
-from app.services.llm.schemas import CompanyFields, CompanyProfile, CompanyProfileText, Counterparty
+from app.services.llm.schemas import (
+    CompanyFields,
+    CompanyProfile,
+    CompanyProfileText,
+    Counterparty,
+    PersonGeo,
+)
 
 PRODUCT_LABELS = {
     "rko": "расчётно-кассовое обслуживание",
@@ -50,6 +56,8 @@ def build_company_profile_text(
     ]
     if fields.group_id:
         parts.append(f"Группа компаний: {fields.group_id}")
+    if fields.persons_total:
+        parts.append(f"Связанные физлица: {persons_summary(fields.persons_total, fields.persons)}")
     main_text = "; ".join(parts)
     if counterparties is None:
         counterparties = fields.counterparties
@@ -83,6 +91,8 @@ def profile_field_labels(
         labels.append("Отрасль")
     if fields.group_id:
         labels.append("Группа компаний")
+    if fields.persons_total:
+        labels.append("Связанные физлица")
     if counterparties if counterparties is not None else fields.counterparties:
         labels.append("Контрагенты")
     return labels
@@ -171,6 +181,17 @@ def _counterparties_block(counterparties: list[Counterparty]) -> str:
     return ", ".join(items)
 
 
+def persons_summary(total: int, persons: list[PersonGeo]) -> str:
+    """«5 (Москва — 3; Казань — 2)»: число связанных физлиц и их география."""
+
+    places = []
+    for person in persons:
+        place = ", ".join(part for part in (person.city, person.region) if part) or _UNKNOWN
+        places.append(f"{place} — {person.count}")
+    detail = f" ({'; '.join(places)})" if places else ""
+    return f"{total}{detail}"
+
+
 def _aspects(fields: CompanyFields) -> dict[str, str]:
     industry = (
         f"Отрасль: ОКВЭД {fields.okved_code} — {fields.okved_name}"
@@ -181,6 +202,8 @@ def _aspects(fields: CompanyFields) -> dict[str, str]:
         f"; численность: {_v(fields.workers_fns)}; стадия: {_v(fields.eco_stage)}; "
         f"география: {_geo(fields)}"
     )
+    if fields.persons_total:
+        industry += f"; связанные физлица: {persons_summary(fields.persons_total, fields.persons)}"
     finance = (
         f"Выручка: {format_revenue(fields.revenue)}; тип клиента: {_v(fields.client_type)}; "
         f"продукты банка: {_products(fields)}; факторинг: {_used(fields.factoring)}"

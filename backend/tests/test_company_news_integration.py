@@ -637,3 +637,79 @@ def test_generic_okved_words_do_not_make_unrelated_news_relevant(settings):
     assert activity not in freight and finance not in freight
     key_rate = matched[ids["Банк России сохранил ключевую ставку на уровне 14%"]]
     assert finance in key_rate
+
+
+def test_related_persons_geography_feeds_profile_and_feed_rules(settings):
+    from sqlalchemy import select
+
+    from app.models.company import CompanyPersonLink, CsvImport, Person
+    from app.repositories.company_news import relevance_rules
+    from app.repositories.company_profiles import load_person_geo
+
+    data = seed(settings)
+    news_id = uuid4()
+
+    async def scenario():
+        async with sessions(settings) as factory, factory.begin() as session:
+            csv = CsvImport(
+                kind="persons",
+                content_hash=uuid4().hex,
+                filename="persons.csv",
+                encoding="utf-8-sig",
+                delimiter=";",
+                row_count=3,
+                counts={},
+            )
+            session.add(csv)
+            await session.flush()
+            tag = uuid4().hex[:8]
+            for suffix, city, region in (
+                ("a", "Тюмень", "Тюменская область"),
+                ("b", "Тюмень", "Тюменская область"),
+                ("c", None, None),
+            ):
+                session.add(
+                    Person(id=f"F_{tag}{suffix}", city=city, region=region, last_import_id=csv.id)
+                )
+            await session.flush()
+            for suffix in "abc":
+                session.add(
+                    CompanyPersonLink(
+                        company_id=data.company_id,
+                        person_id=f"F_{tag}{suffix}",
+                        last_import_id=csv.id,
+                    )
+                )
+            session.add(
+                NewsArticle(
+                    id=news_id,
+                    source_code=data.source,
+                    title="В Тюмени открыли новый завод",
+                    summary=None,
+                    canonical_url=f"https://example.test/{news_id}",
+                    original_url=f"https://example.test/{news_id}",
+                    authors=[],
+                    source_categories=[],
+                    topics=["other"],
+                    content_hash=str(news_id),
+                    normalizer_version=1,
+                )
+            )
+            await session.flush()
+            company = await session.get(Company, data.company_id)
+            total, places = await load_person_geo(session, data.company_id)
+            rules = relevance_rules(company, places)
+            rows = await session.execute(
+                select(NewsArticle.id, *(condition for _, condition, _ in rules)).where(
+                    NewsArticle.id == news_id
+                )
+            )
+            names = [name for name, _, _ in rules]
+            row = rows.one()
+            matched = {n for n, flag in zip(names, row[1:], strict=True) if flag}
+            return total, places, matched
+
+    total, places, matched = asyncio.run(scenario())
+    assert total == 3  # учтён и физлицо без адреса
+    assert [(p.region, p.count) for p in places] == [("Тюменская область", 2)]
+    assert "Упоминание региона связанных физлиц" in matched

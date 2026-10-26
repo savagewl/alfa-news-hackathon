@@ -51,13 +51,13 @@ from app.services.assessments import (
 )
 from app.services.company_news import (
     LLMUnavailable,
-    company_context,
     company_input_fingerprint,
     completed_response,
     emit_interpretation_progress,
     final_cache_key,
     generate_interpretation,
     interpretation_progress,
+    load_company_context,
     model_prompt_version,
     prepare_interpretation,
     require_llm,
@@ -226,7 +226,9 @@ async def interpret_news(
         session,
         company_id=company_id,
         news_id=news_id,
-        company_input_fingerprint=company_input_fingerprint(company_context(company)),
+        company_input_fingerprint=company_input_fingerprint(
+            await load_company_context(session, company)
+        ),
         news_input_fingerprint=news_input_fingerprint(article, ai),
         model_prompt_version=model_prompt_version(ai),
         trusted_bank_document_ids=ai.bank_document_ids,
@@ -658,7 +660,9 @@ async def stream_news_assessments(
                 article = await item_session.get(NewsArticle, news_id)
                 company = await item_session.get(Company, company_id)
                 fingerprint = assessment_fingerprint(
-                    company_input_fingerprint(company_context(company)), article, ai
+                    company_input_fingerprint(await load_company_context(item_session, company)),
+                    article,
+                    ai,
                 )
             payload = await ready_payload(news_id, fingerprint)
             if payload is not None:

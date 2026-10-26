@@ -8,9 +8,15 @@ CsvEncoding = Literal["utf-8-sig", "cp1251"]
 
 
 class ImportCounts(BaseModel):
+    preserved_person_attributes: int = Field(
+        default=0, description="Физлица, чьи прежние атрибуты сохранены из-за чужих связей",
+    )
+    skipped_inaccessible_rows: int = Field(
+        default=0, description="Строки связей физлиц с недоступными компаниями, не импортированные",
+    )
     person_attribute_conflicts: int = Field(
         default=0,
-        description="Число замен атрибутов повторяющегося SYNTHETIC_F; все связи сохранены",
+        description="Число замен атрибутов повторяющегося SYNTHETIC_F среди импортируемых связей",
     )
     companies: int = 0
     persons: int = 0

@@ -362,3 +362,93 @@ def test_daily_token_budget_blocks_calls():
             provider=MockProvider(),
             settings=settings,
         )
+
+
+def _sse(*events: str) -> bytes:
+    return ("\n\n".join(events) + "\n\n").encode()
+
+
+def test_stream_requests_usage_and_counts_tokens():
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            content=_sse(
+                'data: {"choices":[{"delta":{"content":"{\\"summary\\":\\"ok\\"}"}}]}',
+                'data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":5}}',
+                "data: [DONE]",
+            ),
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://mock")
+    provider = OpenAICompatProvider("http://mock", None, 5, client=client)
+    value, response = complete_json(
+        "news_analysis",
+        Dummy,
+        [{"role": "user", "content": "x"}],
+        provider=provider,
+        settings=_settings(),
+        content_callback=lambda _: None,
+    )
+    assert value.summary == "ok"
+    assert payloads[0]["stream_options"] == {"include_usage": True}
+    assert response.usage_available is True
+    assert (response.prompt_tokens, response.completion_tokens) == (11, 5)
+
+
+def test_stream_falls_back_when_gateway_rejects_stream_options():
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        if "stream_options" in payload:
+            return httpx.Response(422, json={"error": "unknown field stream_options"})
+        return httpx.Response(
+            200,
+            content=_sse(
+                'data: {"choices":[{"delta":{"content":"{\\"summary\\":\\"ok\\"}"}}]}',
+                "data: [DONE]",
+            ),
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://mock")
+    provider = OpenAICompatProvider("http://mock", None, 5, client=client)
+    value, response = complete_json(
+        "news_analysis",
+        Dummy,
+        [{"role": "user", "content": "x"}],
+        provider=provider,
+        settings=_settings(),
+        content_callback=lambda _: None,
+    )
+    assert value.summary == "ok" and response.usage_available is False
+    assert "stream_options" in payloads[0] and "stream_options" not in payloads[1]
+    assert len(payloads) == 2
+
+
+def test_stream_skips_malformed_sse_lines():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse(
+                "data: {broken json",
+                'data: ["not", "an", "object"]',
+                'data: {"choices":[{"delta":{"content":"{\\"summary\\":\\"ok\\"}"}}]}',
+                "data: [DONE]",
+            ),
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://mock")
+    provider = OpenAICompatProvider("http://mock", None, 5, client=client)
+    value, _ = complete_json(
+        "news_analysis",
+        Dummy,
+        [{"role": "user", "content": "x"}],
+        provider=provider,
+        settings=_settings(),
+        content_callback=lambda _: None,
+    )
+    assert value.summary == "ok"

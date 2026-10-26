@@ -38,8 +38,8 @@ from app.schemas.news import NewsError
 from app.services.chat import InvalidChatAnswer, bounded_history, generate_chat_answer
 from app.services.company_news import (
     LLMUnavailable,
-    company_context,
     company_input_fingerprint,
+    load_company_context,
     model_prompt_version,
 )
 from app.services.llm.schemas import BankPassage, InsightDraft
@@ -199,7 +199,7 @@ async def send_news_chat_message(
     except ChatThreadNotFound:
         raise HTTPException(404, "Chat thread not found") from None
 
-    context = company_context(company)
+    context = await load_company_context(session, company)
     cached = await find_current_interpretation(
         session,
         company_id=company_id,

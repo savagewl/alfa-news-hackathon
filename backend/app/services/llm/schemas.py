@@ -43,6 +43,14 @@ class ProcessedNews(BaseModel):
     embedding_model_version: str
 
 
+class PersonGeo(BaseModel):
+    """Связанные физлица (обезличенные SYNTHETIC_F), сгруппированные по географии."""
+
+    city: str | None = None
+    region: str | None = None
+    count: int = Field(default=1, ge=1)
+
+
 class CompanyFields(BaseModel):
     synthetic_u: str
     org_type: str | None = None
@@ -64,6 +72,9 @@ class CompanyFields(BaseModel):
     city: str | None = None
     region: str | None = None
     counterparties: list["Counterparty"] = Field(default_factory=list)
+    # Всего связанных физлиц и топ их городов/регионов; роли (владелец, директор) неизвестны.
+    persons_total: int = 0
+    persons: list[PersonGeo] = Field(default_factory=list)
 
     @classmethod
     def from_csv_row(cls, row: dict[str, str]) -> "CompanyFields":
@@ -230,6 +241,20 @@ class InsightDraft(BaseModel):
         "claims",
         mode="before",
     )(_as_model_input)
+
+    @field_validator("bank_position", "ai_interpretation", mode="after")
+    @classmethod
+    def _strip_passage_refs(cls, value: str | None) -> str | None:
+        from app.services.llm.text import strip_passage_refs
+
+        return strip_passage_refs(value)
+
+    @field_validator("risks", "opportunities", "suggested_actions", mode="after")
+    @classmethod
+    def _drop_filler_items(cls, value: list[str]) -> list[str]:
+        from app.services.llm.text import is_filler_item
+
+        return [item for item in value if not is_filler_item(item)]
 
     @field_validator("claims", mode="after")
     @classmethod

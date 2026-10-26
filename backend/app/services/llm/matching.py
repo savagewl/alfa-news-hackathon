@@ -15,10 +15,14 @@ _SECTOR_EXACT_WEIGHT = 0.4
 _SECTOR_WEIGHT = 0.35
 _SECTOR_FUZZY_WEIGHT = 0.15
 _REGION_WEIGHT = 0.2
+_PERSONS_WEIGHT = 0.1
 _COUNTERPARTY_WEIGHT = 0.25
 _PRODUCT_WEIGHT = 0.15
 _RATE_PRODUCT_WEIGHT = 0.15
 _SCALE_WEIGHT = 0.1
+# Только «банковские» сигналы (слово «кредит» в тексте, ставка) без отрасли, региона и
+# контрагентов — слабая связь: вклад в оценку ограничен.
+_BANKING_ONLY_CAP = 0.2
 
 _REGION_STOPWORDS = {"область", "край", "республика", "округ", "город", "автономная", "мск"}
 
@@ -33,7 +37,7 @@ _PRODUCT_NEWS_PATTERNS = {
 }
 
 _MIN_COUNTERPARTY_NAME = 3
-_REGION_STEM_LEN = 6
+_REGION_STEM_LEN = 5
 
 _ANY_SIZE = "любой"
 
@@ -61,11 +65,22 @@ def score_relevance(
 
     sector_rule = _sector_rule(fields, news)
     region_rule = _region_rule(fields, news)
+    persons_rule = _persons_rule(fields, news, region_rule)
     counterparty_rule = _counterparty_rule(fields, news)
     product_rule = _product_rule(fields, news)
     rate_rule = _rate_product_rule(fields, news)
     scale_rule = _scale_rule(fields, news)
-    rules.extend([sector_rule, region_rule, counterparty_rule, product_rule, rate_rule, scale_rule])
+    rules.extend(
+        [
+            sector_rule,
+            region_rule,
+            persons_rule,
+            counterparty_rule,
+            product_rule,
+            rate_rule,
+            scale_rule,
+        ]
+    )
 
     for rule in rules:
         if rule.matched:
@@ -78,9 +93,14 @@ def score_relevance(
         reasons.append(f"Семантическое сходство (реранкер): {rerank:.2f}")
         semantic = max(rerank, 0.0)
 
-    score = settings.relevance_cosine_weight * semantic + sum(
-        rule.weight for rule in rules if rule.matched
+    matched_total = sum(rule.weight for rule in rules if rule.matched)
+    entity_matched = any(
+        rule.matched for rule in (sector_rule, region_rule, persons_rule, counterparty_rule)
     )
+    banking_total = sum(rule.weight for rule in (product_rule, rate_rule) if rule.matched)
+    if not entity_matched and banking_total > _BANKING_ONLY_CAP:
+        matched_total -= banking_total - _BANKING_ONLY_CAP
+    score = settings.relevance_cosine_weight * semantic + matched_total
     score = min(score, 1.0)
     return RelevanceScore(
         company_id=fields.synthetic_u,
@@ -171,6 +191,41 @@ def _region_rule(fields: CompanyFields, news: ProcessedNews) -> RelevanceRule:
         matched=False,
         weight=_REGION_WEIGHT,
         detail="нет региональной связи",
+    )
+
+
+def _persons_rule(
+    fields: CompanyFields, news: ProcessedNews, region_rule: RelevanceRule
+) -> RelevanceRule:
+    """Регион/город связанных физлиц: новость о нём важна компании, даже если её регион другой."""
+
+    if region_rule.matched:
+        return RelevanceRule(
+            name="persons",
+            matched=False,
+            weight=_PERSONS_WEIGHT,
+            detail="связь по региону компании уже учтена",
+        )
+    news_tokens = set()
+    for region in news.markup.regions:
+        news_tokens |= _region_tokens(region)
+    haystack = (news.text + " " + news.summary).lower()
+    for person in fields.persons:
+        place = _region_tokens(person.region) | _region_tokens(person.city)
+        text_stems = place_stems(person.region) | place_stems(person.city)
+        if place & news_tokens or any(stem in haystack for stem in text_stems):
+            label = ", ".join(part for part in (person.city, person.region) if part)
+            return RelevanceRule(
+                name="persons",
+                matched=True,
+                weight=_PERSONS_WEIGHT,
+                detail=f"Региональная связь через связанных физлиц: {label}",
+            )
+    return RelevanceRule(
+        name="persons",
+        matched=False,
+        weight=_PERSONS_WEIGHT,
+        detail="регионы связанных физлиц не затронуты",
     )
 
 
@@ -280,6 +335,18 @@ def _region_tokens(value: str | None) -> set[str]:
         return set()
     return {
         _region_stem(word)
+        for word in re.findall(r"[а-яё]{4,}", value.lower())
+        if word not in _REGION_STOPWORDS
+    }
+
+
+def place_stems(value: str | None) -> set[str]:
+    """Основы для поиска в тексте: «Тюмень», «Тюмени», «Тюменская» дают «тюмен»."""
+
+    if not value:
+        return set()
+    return {
+        word[:_REGION_STEM_LEN]
         for word in re.findall(r"[а-яё]{4,}", value.lower())
         if word not in _REGION_STOPWORDS
     }

@@ -353,3 +353,74 @@ def test_documents_without_vectors_are_requeued_for_embedding(settings):
     assert rows[ids["lost"]].embedding_error is None
     assert rows[ids["ready"]].status == "ready"
     assert rows[ids["empty"]].status == "parsed"
+
+
+def test_keyword_only_hits_get_semantic_score_for_similarity_threshold(settings, monkeypatch):
+    user_id = uuid4()
+
+    class FakeEmbedder:
+        model_version = "fake:4d"
+
+        def embed_one(self, text):
+            return [1.0, 0.0, 0.0, 0.0]
+
+    monkeypatch.setattr("app.services.analytics.search.get_embedder", lambda: FakeEmbedder())
+
+    async def scenario():
+        async with sessions(settings) as factory:
+            async with factory.begin() as session:
+                session.add(
+                    User(user_id=user_id, email=f"{user_id}@test.invalid", password_hash="unused")
+                )
+            try:
+                async with factory() as session:
+                    record, _ = await enqueue(
+                        session,
+                        sha256=uuid4().hex,
+                        filename="forecast.pdf",
+                        title="Прогноз",
+                        publisher="Test",
+                        uploaded_by=user_id,
+                        content=b"%PDF-",
+                        topics=[],
+                    )
+                async with factory.begin() as session:
+                    await session.execute(
+                        update(AnalyticsDocument)
+                        .where(AnalyticsDocument.id == record.id)
+                        .values(status="ready", chunk_count=2, published_at=datetime(2026, 10, 1))
+                    )
+                    for chunk_id, vector in (("near", [1.0, 0, 0, 0]), ("far", [0, 1.0, 0, 0])):
+                        text = f"Ключевая ставка и прогноз {chunk_id}"
+                        session.add(
+                            AnalyticsChunk(
+                                document_id=record.id,
+                                chunk_id=chunk_id,
+                                page_number=1,
+                                section="Раздел",
+                                text=text,
+                                bbox=[0, 0, 1, 1],
+                                search_text=text,
+                                vector=vector,
+                                embedding_model_version="fake:4d",
+                            )
+                        )
+                async with factory() as session:
+                    return await search_analytics(
+                        session,
+                        SearchRequest(
+                            query="ставка", semantic_query="ставка", document_ids=[record.id]
+                        ),
+                    )
+            finally:
+                async with factory.begin() as session:
+                    await session.execute(
+                        delete(AnalyticsDocument).where(AnalyticsDocument.uploaded_by == user_id)
+                    )
+                    await session.execute(delete(User).where(User.user_id == user_id))
+
+    response = asyncio.run(scenario())
+    scores = {hit.chunk_id: hit.semantic_score for hit in response.items}
+    assert scores["near"] == 1.0
+    # «far» найден по слову, но смыслово ортогонален: оценка 0.0, а не None
+    assert scores["far"] == 0.0

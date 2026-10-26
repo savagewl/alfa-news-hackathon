@@ -167,3 +167,23 @@ def test_parenthesized_markers_with_nested_parentheses_are_removed():
     assert strip_inline_refs(text) == (
         "Для компании, в квартале есть риск. Итог (не ссылка) остаётся."
     )
+
+
+def test_markers_with_introductory_words_in_parentheses_are_removed():
+    from app.services.chat import strip_inline_refs
+
+    text = (
+        "Прогноз экономиста (источник: news:https://www.klerk.ru/buh/news/714841/), "
+        "ставка останется 14% (см. bank:3f2c#p1). Подробности (в таблице) ниже."
+    )
+    assert strip_inline_refs(text) == (
+        "Прогноз экономиста, ставка останется 14%. Подробности (в таблице) ниже."
+    )
+
+
+def test_bank_passage_numbers_are_removed_from_chat_answer():
+    from app.services.chat import strip_inline_refs
+
+    assert strip_inline_refs("Банк ждёт 14% [B1], инфляция 6% [B2, B3].") == (
+        "Банк ждёт 14%, инфляция 6%."
+    )

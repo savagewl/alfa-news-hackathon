@@ -11,6 +11,7 @@ from app.services.llm.config import ServicesSettings
 from app.services.llm.insight import answer_question_structured
 from app.services.llm.provider import MockProvider, OpenAICompatProvider
 from app.services.llm.schemas import BankPassage, CompanyContext, InsightDraft, NewsEvent
+from app.services.llm.text import strip_passage_refs
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +19,15 @@ logger = logging.getLogger(__name__)
 # источники отдаются отдельным списком, в тексте ответа они только мешают.
 _INLINE_REF = re.compile(
     r"\s*(?:\[(?:news|bank|company|analytics):[^\]]*\]"
-    # в круглых скобках допускается один уровень вложенности: (company:Отрасль (ОКВЭД 25.11))
-    r"|\((?:news|bank|company|analytics):(?:[^()]|\([^()]*\))*\))"
+    # в круглых скобках допускается один уровень вложенности и вводное слово перед ссылкой:
+    # (company:Отрасль (ОКВЭД 25.11)), (источник: news:https://…), (см. bank:…#p1)
+    r"|\((?:[^()]|\([^()]*\)){0,25}?(?<!\w)(?:news|bank|company|analytics):"
+    r"(?:[^()]|\([^()]*\))*\))"
 )
 
 
 def strip_inline_refs(text: str) -> str:
-    cleaned = _INLINE_REF.sub("", text)
+    cleaned = strip_passage_refs(_INLINE_REF.sub("", text)) or ""
     return re.sub(r"[ \t]+([.,;:!?])", r"\1", cleaned).strip()
 
 

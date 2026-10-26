@@ -91,6 +91,9 @@ class ServicesSettings(BaseSettings):
     # Сколько новостей страницы ленты ставится в очередь на оценку за один запрос.
     assessment_enqueue_limit: int = Field(default=20, ge=1, le=100)
     assessment_bank_passages: int = Field(default=3, ge=1, le=8)
+    # Фрагмент банка годится для позиции по новости, только если косинус темы новости и
+    # фрагмента не ниже порога (bge-m3: несвязанные тексты 0.2-0.4, прямое совпадение 0.5+).
+    bank_min_similarity: float = Field(default=0.45, ge=0, le=1)
 
     _PURPOSES = frozenset(
         {

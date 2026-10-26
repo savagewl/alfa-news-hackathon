@@ -1,10 +1,18 @@
 from collections.abc import Iterable
+from uuid import UUID
 
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.company import Company, CompanyPayment, CompanyPersonLink, CsvImport, Person
+from app.models.company import (
+    Company,
+    CompanyMembership,
+    CompanyPayment,
+    CompanyPersonLink,
+    CsvImport,
+    Person,
+)
 
 BATCH_SIZE = 500
 
@@ -52,7 +60,9 @@ async def save_companies(session: AsyncSession, rows: list[dict], import_id) -> 
     return {"companies": len(unique)}
 
 
-async def save_persons(session: AsyncSession, rows: list[dict], import_id) -> dict:
+async def save_persons(
+    session: AsyncSession, rows: list[dict], import_id, *, user_id: UUID | None = None
+) -> dict:
     placeholders = await ensure_companies(session, (row["company_id"] for row in rows))
     persons = {}
     links = {}
@@ -68,9 +78,31 @@ async def save_persons(session: AsyncSession, rows: list[dict], import_id) -> di
             "person_id": row["id"],
             "last_import_id": import_id,
         }
-    await upsert_rows(session, Person, list(persons.values()), ["id"])
+    protected = {}
+    if user_id is not None:
+        owned = select(CompanyMembership.company_id).where(CompanyMembership.user_id == user_id)
+        ids = sorted(persons)
+        for offset in range(0, len(ids), BATCH_SIZE):
+            existing = await session.scalars(
+                select(Person).join(CompanyPersonLink, CompanyPersonLink.person_id == Person.id)
+                .where(
+                    Person.id.in_(ids[offset : offset + BATCH_SIZE]),
+                    CompanyPersonLink.company_id.not_in(owned),
+                )
+            )
+            protected.update({person.id: person for person in existing})
+    preserved = sum(
+        (persons[key]["city"], persons[key]["region"]) != (person.city, person.region)
+        for key, person in protected.items()
+    )
+    await upsert_rows(
+        session, Person, [value for key, value in persons.items() if key not in protected], ["id"]
+    )
     await upsert_rows(session, CompanyPersonLink, list(links.values()), ["company_id", "person_id"])
-    return {"persons": len(persons), "links": len(links), "placeholder_companies": placeholders}
+    return {
+        "persons": len(persons), "links": len(links), "placeholder_companies": placeholders,
+        "preserved_person_attributes": preserved,
+    }
 
 
 async def save_payments(session: AsyncSession, rows: list[dict], import_id) -> dict:

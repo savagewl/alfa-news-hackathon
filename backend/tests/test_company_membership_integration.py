@@ -161,8 +161,17 @@ def test_imports_do_not_grant_counterparty_access_or_allow_foreign_links(client)
     assert not db_rows(settings, select(Company).where(Company.id.in_([unknown1, unknown2])))
     person = uuid4().hex
     foreign = f"SYNTHETIC_F,SYNTHETIC_U,CITY_NAME,RC_NAME\n{person},{other},M,R\n".encode()
-    assert upload(http, "persons", foreign).status_code == 403
-    assert not db_rows(settings, select(Person).where(Person.id == person))
+    result = upload(http, "persons", foreign)
+    assert result.status_code == 200
+    assert result.json()["counts"]["links"] == 1
+    assert result.json()["counts"]["skipped_inaccessible_rows"] == 0
+    filtered = http.post(
+        "/imports/persons?skip_inaccessible=true", files={"file": ("persons.csv", foreign)}
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["counts"]["skipped_inaccessible_rows"] == 1
+    assert len(db_rows(settings, select(Person).where(Person.id == person))) == 1
+    assert http.get(f"/companies/{other}").status_code == 404
 
 
 def test_shared_person_cannot_be_modified_through_only_one_company(client):
@@ -183,9 +192,30 @@ def test_shared_person_cannot_be_modified_through_only_one_company(client):
     assert upload(http, "persons", first).status_code == 200
     assert upload_as(http, "persons", second, outsider_headers).status_code == 200
     changed = f"SYNTHETIC_F,SYNTHETIC_U,CITY_NAME,RC_NAME\n{person},{own},Changed,R\n".encode()
-    assert upload(http, "persons", changed).status_code == 403
+    result = upload(http, "persons", changed)
+    assert result.status_code == 200
+    assert result.json()["counts"]["preserved_person_attributes"] == 1
     assert http.get(f"/companies/{own}/persons").json()["items"][0]["city"] == "M"
     assert (
         http.get(f"/companies/{other}/persons", headers=outsider_headers).json()["items"][0]["city"]
         == "M"
     )
+
+
+def test_person_links_create_unknown_companies_without_memberships(client):
+    http, settings = client
+    unknown, person = uuid4().hex, uuid4().hex
+    content = f"SYNTHETIC_F,SYNTHETIC_U,CITY_NAME,RC_NAME\n{person},{unknown},M,R\n".encode()
+    response = upload(http, "persons", content)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["counts"]["links"] == 1
+    assert result["counts"]["placeholder_companies"] == 1
+    assert result["counts"]["skipped_inaccessible_rows"] == 0
+    assert db_rows(settings, select(Company).where(Company.id == unknown))[0]["is_placeholder"]
+    assert http.get(f"/companies/{unknown}").status_code == 404
+    assert http.get(f"/companies/{unknown}/persons").status_code == 404
+    repeated = upload(http, "persons", content)
+    assert repeated.status_code == 200
+    assert repeated.json()["reused"]
+    assert repeated.json()["import_id"] == result["import_id"]

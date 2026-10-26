@@ -29,9 +29,9 @@ from app.services.analytics.selection import effective_bank_settings
 from app.services.company_news import (
     DeadlineClient,
     bank_query,
-    company_context,
     company_input_fingerprint,
     fingerprint_of,
+    load_company_context,
     require_llm,
     retrieve_bank_passages,
 )
@@ -45,11 +45,11 @@ from app.services.llm.provider import (
     messages,
 )
 from app.services.llm.schemas import AssessmentDraft, BankPassage, CompanyContext, NewsEvent
-from app.services.llm.text import shorten_text
+from app.services.llm.text import is_empty_assessment, shorten_text
 
 logger = logging.getLogger("app.services.assessments")
 
-ASSESSMENT_PROMPT_VERSION = 3
+ASSESSMENT_PROMPT_VERSION = 4
 MAX_SENTENCES = 2
 MAX_BLOCK_CHARS = 280
 NEWS_TEXT_CHARS = 2000
@@ -202,13 +202,14 @@ async def build_assessment(
     """Fingerprint and stored payload for one (company, news) pair."""
 
     settings = await effective_bank_settings(session, settings)
-    context = company_context(company)
+    context = await load_company_context(session, company)
     news, warnings, _ = await fetch_news_event(
         session, article, allow_rss_fallback=True, settings=settings
     )
     passages, sources, bank_warnings = await retrieve_bank_passages(
         session,
         query=bank_query(article, company),
+        semantic_query=article.title,
         settings=settings,
         as_of=(article.published_at or datetime.now(UTC)).date(),
         limit=settings.assessment_bank_passages,
@@ -359,15 +360,27 @@ class AssessmentWorker:
             )
 
 
-def assessment_view(payload: dict) -> dict:
-    """Feed fields from a stored payload; empty risks/opportunities are None."""
+def _block(value: str | None) -> list[str] | None:
+    """Блок ленты списком; None, если текста нет или это «Не выявлено» из старого кэша."""
 
+    return [value] if value and not is_empty_assessment(value) else None
+
+
+def assessment_view(payload: dict) -> dict:
+    """Feed fields from a stored payload; empty risks/opportunities are None.
+
+    Пустые формулировки отсекаются и при чтении: оценки, сохранённые до появления
+    проверки, не нужно пересчитывать ради этого.
+    """
+
+    bank = payload.get("bank_analytics")
+    brief = payload.get("brief_impact")
     return {
         "assessment_status": "ready",
-        "brief_impact": payload.get("brief_impact"),
-        "risks": [payload["risks"]] if payload.get("risks") else None,
-        "opportunities": [payload["opportunities"]] if payload.get("opportunities") else None,
-        "bank_analytics": payload.get("bank_analytics"),
-        "bank_sources": payload.get("bank_sources") or [],
+        "brief_impact": None if is_empty_assessment(brief) else brief,
+        "risks": _block(payload.get("risks")),
+        "opportunities": _block(payload.get("opportunities")),
+        "bank_analytics": None if is_empty_assessment(bank) else bank,
+        "bank_sources": [] if is_empty_assessment(bank) else payload.get("bank_sources") or [],
         "generated_at": payload.get("generated_at"),
     }

@@ -62,3 +62,28 @@ def test_profile_fingerprint_changes_with_counterparty_and_model():
     )
     assert changed_counterparty.fingerprint != initial.fingerprint
     assert changed_model.fingerprint != changed_counterparty.fingerprint
+
+
+def test_related_persons_enter_profile_text_and_change_fingerprint_only_when_present():
+    from app.services.llm.schemas import PersonGeo
+
+    settings = ServicesSettings(_env_file=None)
+    base = build_company_profile_input(_company(), [], settings)
+    assert "физлица" not in base.text.main_text
+    same = build_company_profile_input(_company(), [], settings, (0, []))
+    assert same.fingerprint == base.fingerprint  # кэш профилей без физлиц не сбрасывается
+
+    persons = (
+        4,
+        [
+            PersonGeo(city="Москва", region="Москва", count=3),
+            PersonGeo(region="Курганская область"),
+        ],
+    )
+    with_persons = build_company_profile_input(_company(), [], settings, persons)
+    assert "Связанные физлица: 4 (Москва, Москва — 3; Курганская область — 1)" in (
+        with_persons.text.main_text
+    )
+    assert "связанные физлица: 4" in with_persons.text.aspects["industry"]
+    assert with_persons.fingerprint != base.fingerprint
+    assert with_persons.fields.persons_total == 4

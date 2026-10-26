@@ -197,6 +197,7 @@ class OpenAICompatProvider:
         )
         self._timeout = timeout
         self._reasoning_budget = reasoning_budget
+        self._stream_usage = True
 
     def _payload(
         self,
@@ -217,6 +218,10 @@ class OpenAICompatProvider:
             payload["reasoning"] = {"max_token_budget": self._reasoning_budget}
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if stream and self._stream_usage:
+            # Без этого OpenAI-совместимые шлюзы не отдают usage в SSE: токены самой дорогой
+            # (потоковой) генерации не попадают ни в USAGE_LEDGER, ни в суточный лимит.
+            payload["stream_options"] = {"include_usage": True}
         return payload
 
     def complete(
@@ -310,6 +315,14 @@ class OpenAICompatProvider:
                 with self._client.stream(
                     "POST", "/chat/completions", json=payload, timeout=timeout
                 ) as response:
+                    if response.status_code in {400, 422} and self._stream_usage:
+                        body = response.read().decode("utf-8", "ignore").lower()
+                        if "stream_options" in body or "include_usage" in body:
+                            # Шлюз не знает stream_options: дальше стримим без него.
+                            self._stream_usage = False
+                            payload.pop("stream_options", None)
+                            last_error = RuntimeError("stream_options не поддерживается")
+                            continue
                     if response.status_code == 429 or response.status_code >= 500:
                         last_error = RuntimeError(f"HTTP {response.status_code}")
                         delay = _retry_delay(response, attempt)
@@ -326,7 +339,13 @@ class OpenAICompatProvider:
                             data = line[5:].strip()
                             if data == "[DONE]":
                                 break
-                            event = json.loads(data)
+                            try:
+                                event = json.loads(data)
+                            except json.JSONDecodeError:
+                                logger.warning("LLM stream: пропущена битая строка SSE")
+                                continue
+                            if not isinstance(event, dict):
+                                continue
                             if event.get("usage"):
                                 usage = event["usage"]
                             for choice in event.get("choices") or []:

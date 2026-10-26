@@ -1,5 +1,6 @@
 import asyncio
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from app.models.news import NewsArticle
 from app.models.news_embeddings import EMBEDDING_DIM, NewsEmbedding
 from app.repositories.company_profiles import (
     load_current_company_profile,
+    load_person_geo,
     prepare_company_profile_input,
 )
 from app.repositories.news_embeddings import (
@@ -20,10 +22,10 @@ from app.repositories.news_embeddings import (
 )
 from app.schemas.company_news import CompanyNewsItem, CompanyNewsPage
 from app.services.llm.config import ServicesSettings
-from app.services.llm.matching import score_relevance
+from app.services.llm.matching import place_stems, score_relevance
 from app.services.llm.news_analysis import NEWS_PROMPT_VERSION
 from app.services.llm.rerank import get_reranker
-from app.services.llm.schemas import NewsAnalysis, ProcessedNews, RelevanceScore
+from app.services.llm.schemas import NewsAnalysis, PersonGeo, ProcessedNews, RelevanceScore
 from app.services.llm.text import shorten_text
 
 BUSINESS_TOPICS = ("economy", "business", "finance", "taxes", "regulation")
@@ -79,7 +81,7 @@ def okved_keywords(okved_name: str | None) -> list[str]:
     return sorted(words)[:12]
 
 
-def relevance_rules(company: Company):
+def relevance_rules(company: Company, person_places: Sequence[PersonGeo] = ()):
     text = func.concat_ws(
         " ", NewsArticle.title, NewsArticle.summary, cast(NewsArticle.source_categories, Text)
     )
@@ -104,6 +106,20 @@ def relevance_rules(company: Company):
                 0.5,
             )
         )
+    own_stems = place_stems(company.region) | place_stems(company.city)
+    person_stems = sorted(
+        {
+            stem
+            for person in person_places
+            for place in (person.region, person.city)
+            for stem in place_stems(place)
+        }
+        - own_stems
+    )[:6]
+    if person_stems:
+        # Основы слов, а не названия целиком: «Тюмень» должна находить «в Тюмени».
+        mentioned = or_(*(text.icontains(stem, autoescape=True) for stem in person_stems))
+        rules.append(("Упоминание региона связанных физлиц", mentioned, 0.15))
     if company.region:
         rules.append(
             ("Упоминание региона компании", text.icontains(company.region, autoescape=True), 0.25)
@@ -135,7 +151,8 @@ async def list_company_news(
     relevant_only: bool,
     settings: ServicesSettings,
 ) -> CompanyNewsPage:
-    rules = relevance_rules(company)
+    persons = await load_person_geo(session, company.id)
+    rules = relevance_rules(company, persons[1])
     rule_score = sum(
         (case((condition, weight), else_=0.0) for _, condition, weight in rules), literal(0.0)
     )
@@ -159,7 +176,7 @@ async def list_company_news(
     if published_to:
         filters.append(NewsArticle.published_at <= published_to)
 
-    prepared = await prepare_company_profile_input(session, company, settings)
+    prepared = await prepare_company_profile_input(session, company, settings, persons)
     profile = await load_current_company_profile(session, prepared)
     semantic: dict[UUID, RelevanceScore] = {}
     semantic_articles: dict[UUID, tuple[NewsArticle, float, list[bool]]] = {}
@@ -416,12 +433,12 @@ async def _load_assessments(
     from app.repositories.interpretations import load_ready_assessments
     from app.services.assessments import assessment_fingerprint, assessment_view, llm_is_configured
     from app.services.company_news import (
-        company_context,
         company_input_fingerprint,
+        load_company_context,
         model_prompt_version,
     )
 
-    context = company_context(company)
+    context = await load_company_context(session, company)
     company_fp = company_input_fingerprint(context)
     news_fingerprints = {
         article.id: news_input_fingerprint(article, settings) for article in articles

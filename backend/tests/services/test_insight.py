@@ -282,3 +282,30 @@ def test_normalize_evidence_refs_keeps_clean_draft():
     normalized, note = _normalize_evidence_refs(draft)
     assert normalized.claims == draft.claims
     assert note is None
+
+
+def test_filler_items_are_dropped_from_risks_opportunities_and_actions():
+    from app.services.llm.schemas import InsightDraft
+
+    draft = InsightDraft(
+        headline="Событие",
+        ai_interpretation="Слабая связь с компанией.",
+        risks=["Отсутствие прямой связи между профилем компании и условиями программы"],
+        opportunities=["Не выявлено", "Можно рассмотреть льготный кредит на оборотные средства."],
+        suggested_actions=["Событие не затрагивает деятельность компании.", "Проверить условия."],
+    )
+    assert draft.risks == []
+    assert draft.opportunities == ["Можно рассмотреть льготный кредит на оборотные средства."]
+    assert draft.suggested_actions == ["Проверить условия."]
+
+
+def test_passage_markers_are_removed_from_bank_position_and_interpretation():
+    from app.services.llm.schemas import InsightDraft
+
+    draft = InsightDraft(
+        headline="Событие",
+        bank_position="Позиция аналитиков банка по ставке [B1]. Подробности [B2, B3].",
+        ai_interpretation="Вывод AI [B1] для компании.",
+    )
+    assert draft.bank_position == "Позиция аналитиков банка по ставке. Подробности."
+    assert draft.ai_interpretation == "Вывод AI для компании."

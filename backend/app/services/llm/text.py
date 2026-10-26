@@ -15,6 +15,16 @@ _EMPTY_STATEMENT = re.compile(
     rf"|{_NOT_FOUND})",
     re.IGNORECASE,
 )
+# «Отсутствие прямой связи с компанией», «Событие не затрагивает деятельность» — это не риск
+# и не возможность, а оговорка об их отсутствии.
+_NO_LINK = re.compile(
+    r"^(?:(?:отсутствие|отсутствует|нет)\s+(?:прямой\s+|явной\s+|значимой\s+)?"
+    r"(?:связи|влияния|взаимосвязи)"
+    r"|(?:новость|событие|программа|решение)?\s*не\s+"
+    r"(?:связан\w*|относится|затрагивает|влияет|касается))",
+    re.IGNORECASE,
+)
+_PASSAGE_REF = re.compile(r"\s*\[B\d+(?:\s*[,;]\s*B\d+)*\]")
 _EMPTY_WORDS = {"нет", "null", "none", "n/a", "-", "—"}
 
 
@@ -36,3 +46,20 @@ def is_empty_assessment(text: str | None) -> bool:
         return True
     first = _SENTENCE_END.split(value)[0].strip(" .,")
     return len(first) < 90 and bool(_EMPTY_STATEMENT.match(first))
+
+
+def is_filler_item(text: str | None) -> bool:
+    """Пункт списка без содержания: пусто, «рисков нет», «нет связи с компанией»."""
+
+    if is_empty_assessment(text):
+        return True
+    first = _SENTENCE_END.split(" ".join((text or "").split()))[0].strip(" .,")
+    return len(first) < 120 and bool(_NO_LINK.match(first))
+
+
+def strip_passage_refs(text: str | None) -> str | None:
+    """Убирает служебные номера фрагментов банка «[B1]», «[B1, B2]» из текста для пользователя."""
+
+    if text is None:
+        return None
+    return _PASSAGE_REF.sub("", text).strip()

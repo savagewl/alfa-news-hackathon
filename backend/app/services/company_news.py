@@ -16,6 +16,7 @@ from app.models.news import NewsArticle
 from app.schemas.analytics import SearchRequest
 from app.schemas.company_news import InterpretationResponse, InterpretationSource
 from app.services.analytics.search import SemanticSearchUnavailable, search_analytics
+from app.services.llm.company_profile import persons_summary
 from app.services.llm.config import ServicesSettings
 from app.services.llm.insight import (
     ANALYST_SYSTEM_PROMPT,
@@ -24,7 +25,13 @@ from app.services.llm.insight import (
     build_insight,
 )
 from app.services.llm.provider import MockProvider, OpenAICompatProvider
-from app.services.llm.schemas import BankPassage, CompanyContext, InsightResult, NewsEvent
+from app.services.llm.schemas import (
+    BankPassage,
+    CompanyContext,
+    InsightResult,
+    NewsEvent,
+    PersonGeo,
+)
 
 CONTEXT_VERSION = 1
 MAX_BANK_PASSAGES = 8
@@ -64,7 +71,17 @@ def require_llm(settings: ServicesSettings) -> None:
         raise LLMUnavailable("LLM is not configured; set AI_LLM_API_BASE and AI_LLM_API_KEY")
 
 
-def company_context(company: Company) -> CompanyContext:
+async def load_company_context(session: AsyncSession, company: Company) -> CompanyContext:
+    """Контекст компании для LLM вместе со связанными физлицами (одно обращение к БД)."""
+
+    from app.repositories.company_profiles import load_person_geo
+
+    return company_context(company, await load_person_geo(session, company.id))
+
+
+def company_context(
+    company: Company, persons: tuple[int, list[PersonGeo]] = (0, [])
+) -> CompanyContext:
     industry = f"Отрасль (ОКВЭД {company.okved_code})" if company.okved_code else "Отрасль"
     products = [
         code
@@ -98,6 +115,13 @@ def company_context(company: Company) -> CompanyContext:
         "Город": company.city,
         "Группа компаний": company.group_id,
     }
+    persons_total, person_places = persons
+    if persons_total:
+        # Только география: SYNTHETIC_F обезличены, роль (владелец, директор) в данных не задана.
+        fields["Связанные физлица"] = (
+            persons_summary(persons_total, person_places)
+            + "; обезличены, роль и ФИО неизвестны"
+        )
 
     def display(value):
         if value is None:
@@ -181,6 +205,7 @@ async def retrieve_bank_passages(
     as_of: date,
     limit: int = 6,
     existing_refs: set[str] | None = None,
+    semantic_query: str | None = None,
 ) -> tuple[list[BankPassage], list[InterpretationSource], list[str]]:
     """Search only explicitly trusted bank documents, preserving provenance."""
 
@@ -188,6 +213,7 @@ async def retrieve_bank_passages(
         return [], [], []
     request = SearchRequest(
         query=query[:4000],
+        semantic_query=(semantic_query or "")[:4000] or None,
         mode="hybrid",
         limit=min(limit, MAX_BANK_PASSAGES),
         document_ids=settings.bank_document_ids,
@@ -211,6 +237,10 @@ async def retrieve_bank_passages(
     for hit in found.items:
         evidence_ref = f"bank:{hit.document_id}#{hit.chunk_id}"
         if evidence_ref in seen:
+            continue
+        # Топ выдачи есть всегда, даже у несвязанной темы: без порога сходства позиция банка
+        # получалась «по теме» из любых фрагментов.
+        if hit.semantic_score is not None and hit.semantic_score < settings.bank_min_similarity:
             continue
         seen.add(evidence_ref)
         passages.append(
@@ -244,7 +274,7 @@ async def prepare_interpretation(
 ]:
     from app.repositories.news_embeddings import fetch_news_event
 
-    context = company_context(company)
+    context = await load_company_context(session, company)
     news, warnings, news_fingerprint = await fetch_news_event(
         session, article, allow_rss_fallback=True, settings=settings
     )
@@ -259,6 +289,7 @@ async def prepare_interpretation(
     passages, bank_sources, bank_warnings = await retrieve_bank_passages(
         session,
         query=bank_query(article, company),
+        semantic_query=article.title,
         settings=settings,
         as_of=(article.published_at or datetime.now(UTC)).date(),
     )
@@ -300,6 +331,7 @@ async def retrieve_for_verifier(
         added, added_sources, added_warnings = await retrieve_bank_passages(
             session,
             query=query[:4000],
+            semantic_query=query[:4000],
             settings=settings,
             as_of=(article.published_at or datetime.now(UTC)).date(),
             limit=MAX_BANK_PASSAGES - len(passages),

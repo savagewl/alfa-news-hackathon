@@ -45,7 +45,9 @@ def test_request_cache_key_does_not_depend_on_retrieval(monkeypatch):
     article = SimpleNamespace(
         id=uuid4(), title="Событие", canonical_url=news.url, published_at=None
     )
-    monkeypatch.setattr("app.services.company_news.company_context", lambda _: context)
+    monkeypatch.setattr(
+        "app.services.company_news.load_company_context", AsyncMock(return_value=context)
+    )
     monkeypatch.setattr(
         "app.repositories.news_embeddings.fetch_news_event",
         AsyncMock(return_value=(news, [], "news-fingerprint")),
@@ -280,3 +282,88 @@ def test_general_business_rule_does_not_make_news_relevant():
     rules = [("Совпадение с описанием деятельности компании", None, 0.5), (GENERAL_RULE, None, 0.1)]
     assert not _has_specific_match(rules, [False, True])
     assert _has_specific_match(rules, [True, False])
+
+
+def test_company_context_includes_related_persons_only_when_present():
+    from app.services.llm.schemas import PersonGeo
+
+    values = dict(
+        id="U_1", name="Компания", okved_code="25.11", okved_name="Металлоконструкции",
+        org_type=None, ownership_form=None, age_category=None, development_stage=None,
+        employees_fns_category=None, client_type=None, has_rko=None, has_guarantees=None,
+        has_credit=True, has_leasing=None, has_deposit=None, has_payroll=None,
+        annual_revenue=None, key_owner_flag=None, has_factoring=None, has_fts_data=None,
+        fts_country_name=None, region="Татарстан", city="Казань", group_id=None,
+        updated_at=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    company = SimpleNamespace(**values)
+    without = company_context(company)
+    assert "Связанные физлица" not in without.profile_text
+    assert "Связанные физлица" not in without.evidence_labels
+
+    places = [
+        PersonGeo(city="Москва", region="Москва", count=2),
+        PersonGeo(region="Курганская область"),
+    ]
+    with_persons = company_context(company, (3, places))
+    assert "Связанные физлица: 3 (Москва, Москва — 2; Курганская область — 1)" in (
+        with_persons.profile_text
+    )
+    assert "роль и ФИО неизвестны" in with_persons.profile_text
+    assert "Связанные физлица" in with_persons.evidence_labels
+    from app.services.company_news import company_input_fingerprint
+
+    assert company_input_fingerprint(without) != company_input_fingerprint(with_persons)
+
+
+def test_bank_passages_below_similarity_threshold_are_dropped(monkeypatch):
+    import asyncio
+    from datetime import date
+
+    from app.schemas.analytics import SearchHit, SearchResponse
+    from app.services.company_news import retrieve_bank_passages
+
+    document = uuid4()
+    requests = []
+
+    def hit(chunk: str, similarity: float | None) -> SearchHit:
+        return SearchHit(
+            document_id=document,
+            chunk_id=chunk,
+            page_number=1,
+            section="Раздел",
+            text=f"Фрагмент {chunk}",
+            bbox=[0, 0, 1, 1],
+            title="Прогноз банка",
+            publisher="альфа-банк",
+            published_at=date(2026, 10, 24),
+            score=0.03,
+            semantic_score=similarity,
+            evidence_ref=f"analytics:{document}#{chunk}",
+            source_url="/analytics/documents/x/file#page=1",
+        )
+
+    async def fake_search(session, request):
+        requests.append(request)
+        return SearchResponse(
+            items=[hit("p1", 0.62), hit("p2", 0.31), hit("p3", None), hit("p4", 0.44)],
+            mode_used="hybrid",
+        )
+
+    monkeypatch.setattr("app.services.company_news.search_analytics", fake_search)
+    settings = ServicesSettings(_env_file=None, bank_document_ids=[document])
+    passages, sources, _ = asyncio.run(
+        retrieve_bank_passages(
+            None,
+            query="ставка OR кредиты OR производство",
+            semantic_query="ЦБ сохранил ключевую ставку",
+            settings=settings,
+            as_of=date(2026, 10, 25),
+        )
+    )
+    # 0.62 проходит, 0.31 и 0.44 ниже порога 0.45; найденное только по тексту (None) остаётся
+    assert [p.chunk_id for p in passages] == ["p1", "p3"]
+    assert [s.evidence_ref for s in sources] == [f"bank:{document}#p1", f"bank:{document}#p3"]
+    # смысловой запрос — тема новости, без OR и слов профиля компании
+    assert requests[0].semantic_query == "ЦБ сохранил ключевую ставку"
+    assert "OR" in requests[0].query

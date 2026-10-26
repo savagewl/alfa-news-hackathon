@@ -237,3 +237,17 @@ def test_empty_assessment_statements_become_none():
         "Нет гарантии, что платежи останутся прежними, поэтому риск высок.",
     ):
         assert not is_empty_assessment(text), text
+
+
+def test_assessment_view_cleans_empty_phrases_from_old_cached_payloads():
+    view = assessments.assessment_view(
+        {
+            "risks": "Не выявлено",
+            "opportunities": "Возможность выйти на новый рынок лизинга.",
+            "bank_analytics": "Не выявлено",
+            "bank_sources": [{"evidence_ref": "bank:x#1"}],
+        }
+    )
+    assert view["risks"] is None
+    assert view["opportunities"] == ["Возможность выйти на новый рынок лизинга."]
+    assert view["bank_analytics"] is None and view["bank_sources"] == []

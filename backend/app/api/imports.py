@@ -40,6 +40,8 @@ async def upload(
     session: SessionDep,
     settings: SettingsDep,
     user: CurrentUser,
+    *,
+    skip_inaccessible_person_links: bool = False,
 ) -> ImportResponse:
     try:
         content = await file.read(settings.csv_import_max_bytes + 1)
@@ -68,6 +70,7 @@ async def upload(
             file.filename or "upload.csv",
             encoding,
             user.user_id,
+            skip_inaccessible_person_links=skip_inaccessible_person_links,
         )
     except ImportAccessError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
@@ -106,11 +109,13 @@ async def upload_companies(
     summary="Загрузить CSV физлиц и связей с компаниями",
     description=(
         "Колонки SYNTHETIC_F, SYNTHETIC_U, CITY_NAME, RC_NAME. "
-        "Физлица и связи обновляются по ID. Все компании из строк должны быть доступны "
-        "текущему пользователю. Изменение атрибутов физлица, связанного "
-        "с чужой компанией, запрещено."
+        "Сохраняются все связи, включая недоступные компании. Неизвестные компании "
+        "создаются как заглушки; членство и доступ не выдаются. Атрибуты существующего "
+        "физлица, связанного с чужой компанией, сохраняются без изменений; число таких "
+        "сохранений — counts.preserved_person_attributes. "
+        "skip_inaccessible=true оставляет только доступные связи и возвращает отчёт пропусков."
         " При разных атрибутах одного SYNTHETIC_F сохраняется последняя строка, "
-        "все связи с компаниями сохраняются."
+        "все импортируемые связи с компаниями сохраняются."
     ),
 )
 async def upload_persons(
@@ -120,8 +125,14 @@ async def upload_persons(
     user: CurrentUser,
     encoding: Encoding = "utf-8-sig",
     delimiter: Delimiter = None,
+    skip_inaccessible: Annotated[bool, Query(
+        description="Пропускать связи с недоступными компаниями и возвращать отчёт"
+    )] = False,
 ) -> ImportResponse:
-    return await upload("persons", file, encoding, delimiter, session, settings, user)
+    return await upload(
+        "persons", file, encoding, delimiter, session, settings, user,
+        skip_inaccessible_person_links=skip_inaccessible,
+    )
 
 
 @router.post(

@@ -246,3 +246,85 @@ def test_sector_class_level_news_markup_matches_whole_class():
     score = score_relevance(_profile([0.0] * 8), _fields(), news)
     sector = next(rule for rule in score.rules if rule.name == "sector")
     assert sector.weight == 0.35 and "класса" in sector.detail
+
+
+def test_banking_signals_alone_are_capped_without_sector_region_or_counterparty():
+    markup = _news().markup.model_copy(
+        update={
+            "affected_sectors": [],
+            "regions": [],
+            "impact_kinds": ["rate"],
+            "size_relevance": ["любой"],
+        }
+    )
+    news = _news().model_copy(
+        update={
+            "markup": markup,
+            "text": "Банк запустил льготные кредиты для продавцов маркетплейса.",
+            "summary": "Льготные кредиты для продавцов маркетплейса.",
+        }
+    )
+    fields = _fields(
+        okved_code=None, okved_name=None, region=None, city=None, workers_fns=None, products=["loa"]
+    )
+    # cosine 0.35: 0.4 * 0.35 + кредитование 0.15 + ставка 0.15 = 0.44 без ограничения
+    vector = [(1 - 0.35**2) ** 0.5, 0.35, 0, 0, 0, 0, 0, 0]
+    score = score_relevance(_profile(vector), fields, news)
+    assert {rule.name for rule in score.rules if rule.matched} == {"product", "rate_products"}
+    assert score.score < 0.35 and not score.is_relevant
+    # с совпавшей отраслью ограничения нет
+    with_sector = _news().model_copy(update={"text": news.text, "summary": news.summary})
+    sector_fields = _fields(region=None, city=None, workers_fns=None, products=["loa"])
+    assert score_relevance(_profile(vector), sector_fields, with_sector).is_relevant
+
+
+def test_related_persons_region_makes_news_relevant_when_company_region_differs():
+    from app.services.llm.schemas import PersonGeo
+
+    markup = _news().markup.model_copy(
+        update={
+            "regions": ["Тюменская область"],
+            "affected_sectors": [],
+            "impact_kinds": ["other"],
+            "size_relevance": ["любой"],
+        }
+    )
+    news = _news().model_copy(update={"markup": markup})
+    fields = _fields(
+        okved_code=None,
+        okved_name=None,
+        workers_fns=None,
+        products=[],
+        persons_total=2,
+        persons=[PersonGeo(city="Тюмень", region="Тюменская область", count=2)],
+    )
+    score = score_relevance(_profile([0.0] * 8), fields, news)
+    persons = next(rule for rule in score.rules if rule.name == "persons")
+    region = next(rule for rule in score.rules if rule.name == "region")
+    assert persons.matched and not region.matched
+    assert "связанных физлиц" in persons.detail and "Тюмен" in persons.detail
+    assert any("физлиц" in reason for reason in score.reasons)
+
+    # регион самой компании уже даёт баллы — правило физлиц не дублирует их
+    same_region = _fields(
+        region="Тюменская область",
+        city=None,
+        persons_total=1,
+        persons=[PersonGeo(region="Тюменская область")],
+    )
+    both = score_relevance(_profile([0.0] * 8), same_region, news)
+    assert next(r for r in both.rules if r.name == "region").matched
+    assert not next(r for r in both.rules if r.name == "persons").matched
+
+    # без физлиц правило молчит
+    none = score_relevance(_profile([0.0] * 8), _fields(), news)
+    assert not next(r for r in none.rules if r.name == "persons").matched
+
+
+def test_place_stems_find_declined_names_in_text():
+    from app.services.llm.matching import place_stems
+
+    assert place_stems("Тюмень") == {"тюмен"} == place_stems("Тюменская область")
+    assert "москв" in place_stems("Москва") and "моско" in place_stems("Московская область")
+    text = "в москве открыли завод"
+    assert any(stem in text for stem in place_stems("г. Москва"))

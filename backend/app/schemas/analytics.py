@@ -79,6 +79,9 @@ class PageResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=2, max_length=4000)
+    # Текст для смыслового поиска: если задан, эмбеддится он, а не `query` (который может
+    # содержать операторы OR и слова профиля компании и сбивать поиск от темы новости).
+    semantic_query: str | None = Field(default=None, max_length=4000)
     mode: Literal["hybrid", "keyword", "semantic"] = "hybrid"
     limit: int = Field(default=8, ge=1, le=30)
     publisher: str | None = Field(default=None, max_length=300)
@@ -101,6 +104,8 @@ class SearchHit(PassageResponse):
     publisher: str
     published_at: date | None
     score: float
+    # Косинус запроса и фрагмента (bge-m3); None, если фрагмент найден только по тексту.
+    semantic_score: float | None = None
     evidence_ref: str
     source_url: str
 

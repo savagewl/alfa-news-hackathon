@@ -12,14 +12,23 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from app.models.company import Company, CompanyPayment
+from app.models.company import Company, CompanyPayment, CompanyPersonLink, Person
 from app.models.company_profile import CompanyProfileCache
 from app.services.llm.company_profile import build_company_profile_text
 from app.services.llm.config import ServicesSettings
-from app.services.llm.schemas import CompanyFields, CompanyProfile, CompanyProfileText, Counterparty
+from app.services.llm.schemas import (
+    CompanyFields,
+    CompanyProfile,
+    CompanyProfileText,
+    Counterparty,
+    PersonGeo,
+)
 
 PROFILE_INPUT_VERSION = 1
 MAX_PROFILE_COUNTERPARTIES = 10
+MAX_PROFILE_PERSON_PLACES = 5
+
+PersonsSummary = tuple[int, list[PersonGeo]]
 
 
 @dataclass(frozen=True)
@@ -35,7 +44,11 @@ def configured_embedding_model_version(settings: ServicesSettings) -> str:
     return f"{settings.embed_model}:{settings.embed_dim}d"
 
 
-def company_fields(company: Company, counterparties: list[Counterparty]) -> CompanyFields:
+def company_fields(
+    company: Company,
+    counterparties: list[Counterparty],
+    persons: PersonsSummary = (0, []),
+) -> CompanyFields:
     products = [
         code
         for code, enabled in (
@@ -73,7 +86,27 @@ def company_fields(company: Company, counterparties: list[Counterparty]) -> Comp
         city=company.city,
         region=company.region,
         counterparties=counterparties,
+        persons_total=persons[0],
+        persons=persons[1],
     )
+
+
+async def load_person_geo(
+    session: AsyncSession, company_id: str, *, limit: int = MAX_PROFILE_PERSON_PLACES
+) -> PersonsSummary:
+    """Число связанных физлиц и топ их городов/регионов (сами SYNTHETIC_F в профиль не идут)."""
+
+    count = func.count().label("count")
+    rows = await session.execute(
+        select(Person.city, Person.region, count)
+        .join(CompanyPersonLink, CompanyPersonLink.person_id == Person.id)
+        .where(CompanyPersonLink.company_id == company_id)
+        .group_by(Person.city, Person.region)
+        .order_by(count.desc(), Person.region, Person.city)
+    )
+    groups = [PersonGeo(city=row.city, region=row.region, count=row.count) for row in rows]
+    located = [group for group in groups if group.city or group.region]
+    return sum(group.count for group in groups), located[:limit]
 
 
 async def load_counterparties(
@@ -122,24 +155,33 @@ async def load_counterparties(
 
 
 async def prepare_company_profile_input(
-    session: AsyncSession, company: Company, settings: ServicesSettings
+    session: AsyncSession,
+    company: Company,
+    settings: ServicesSettings,
+    persons: PersonsSummary | None = None,
 ) -> CompanyProfileInput:
     counterparties = await load_counterparties(session, company.id)
-    return build_company_profile_input(company, counterparties, settings)
+    if persons is None:
+        persons = await load_person_geo(session, company.id)
+    return build_company_profile_input(company, counterparties, settings, persons)
 
 
 def build_company_profile_input(
     company: Company,
     counterparties: list[Counterparty],
     settings: ServicesSettings,
+    persons: PersonsSummary = (0, []),
 ) -> CompanyProfileInput:
-    fields = company_fields(company, counterparties)
+    fields = company_fields(company, counterparties, persons)
     text = build_company_profile_text(fields)
     model_version = configured_embedding_model_version(settings)
     canonical = {
         "version": PROFILE_INPUT_VERSION,
         "embedding_model_version": model_version,
-        "fields": fields.model_dump(mode="json"),
+        # Без физлиц отпечаток остаётся прежним: кэш профилей не сбрасывается зря.
+        "fields": fields.model_dump(
+            mode="json", exclude=None if fields.persons_total else {"persons", "persons_total"}
+        ),
         "text": text.model_dump(mode="json"),
     }
     fingerprint = hashlib.sha256(
