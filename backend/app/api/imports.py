@@ -48,8 +48,12 @@ async def upload(
     if len(content) > settings.csv_import_max_bytes:
         raise HTTPException(status_code=413, detail="CSV file is too large")
     try:
+        max_rows = (
+            settings.csv_import_payments_max_rows
+            if kind == "payments" else settings.csv_import_max_rows
+        )
         parsed = await run_in_threadpool(
-            parse_csv, content, kind, encoding, delimiter, settings.csv_import_max_rows
+            parse_csv, content, kind, encoding, delimiter, max_rows
         )
     except CsvValidationError as exc:
         raise HTTPException(
@@ -105,6 +109,8 @@ async def upload_companies(
         "Физлица и связи обновляются по ID. Все компании из строк должны быть доступны "
         "текущему пользователю. Изменение атрибутов физлица, связанного "
         "с чужой компанией, запрещено."
+        " При разных атрибутах одного SYNTHETIC_F сохраняется последняя строка, "
+        "все связи с компаниями сохраняются."
     ),
 )
 async def upload_persons(

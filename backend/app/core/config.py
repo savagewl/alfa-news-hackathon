@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     rss_run_retention_days: int = Field(default=30, ge=1, le=365)
     csv_import_max_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
     csv_import_max_rows: int = Field(default=100_000, ge=1)
+    csv_import_payments_max_rows: int = Field(default=2_000_000, ge=1)
     jwt_secret: SecretStr | None = Field(default=None, min_length=32)
     jwt_expire_minutes: int = Field(default=1440, ge=1)
     postgres_user: str = "alfa_news"

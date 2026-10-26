@@ -19,6 +19,13 @@ from app.services.csv_parser import ParsedCsv
 def response(record: CsvImport, *, reused: bool) -> ImportResponse:
     skipped = record.counts.get("skipped_duplicate_rows", 0)
     warnings = []
+    conflicts = record.counts.get("person_attribute_conflicts", 0)
+    if conflicts:
+        warnings.append(
+            f"В {conflicts} строках повторяющийся SYNTHETIC_F имеет другой город/регион. "
+            "Для каждого физлица сохранены атрибуты последней строки CSV, "
+            "включая пустые значения; все связи с компаниями сохранены."
+        )
     if skipped:
         warnings.append(
             f"Пропущено {skipped} более ранних строк с повторяющимся SYNTHETIC_U. "
@@ -52,11 +59,11 @@ async def import_csv(
         new_companies = await authorize_import(session, kind, parsed.rows, user_id)
         previous = await find_import(session, kind, content_hash)
         if previous is not None:
-            if "skipped_duplicate_rows" not in previous.counts:
-                previous.counts = {
-                    **previous.counts,
-                    "skipped_duplicate_rows": parsed.skipped_duplicate_rows,
-                }
+            previous.counts = {
+                "skipped_duplicate_rows": parsed.skipped_duplicate_rows,
+                "person_attribute_conflicts": parsed.person_attribute_conflicts,
+                **previous.counts,
+            }
             result = response(previous, reused=True)
             await session.commit()
             return result
@@ -80,6 +87,7 @@ async def import_csv(
         record.counts = {
             **record.counts,
             "skipped_duplicate_rows": parsed.skipped_duplicate_rows,
+            "person_attribute_conflicts": parsed.person_attribute_conflicts,
         }
         await join_new_companies(session, new_companies, user_id)
         result = response(record, reused=False)

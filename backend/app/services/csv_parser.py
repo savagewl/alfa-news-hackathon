@@ -50,6 +50,7 @@ class ParsedCsv:
     rows: list[dict]
     delimiter: str
     skipped_duplicate_rows: int = 0
+    person_attribute_conflicts: int = 0
 
 
 def optional(value: str) -> str | None:
@@ -160,6 +161,7 @@ def parse_csv(
     companies_seen = set()
     skipped_duplicate_rows = 0
     persons_seen = {}
+    person_attribute_conflicts = 0
     try:
         reader = csv.DictReader(stream, delimiter=delimiter, strict=True)
         headers = reader.fieldnames
@@ -186,9 +188,10 @@ def parse_csv(
                     companies_seen.add(converted["id"])
                 if kind == "persons":
                     person = (converted["city"], converted["region"])
-                    previous = persons_seen.setdefault(converted["id"], person)
-                    if previous != person:
-                        raise ValueError("Conflicting geography for the same SYNTHETIC_F")
+                    previous = persons_seen.get(converted["id"])
+                    if previous is not None and previous != person:
+                        person_attribute_conflicts += 1
+                    persons_seen[converted["id"]] = person
                 rows.append(converted)
             except ValueError as exc:
                 errors.append({"row": line, "message": str(exc)})
@@ -204,4 +207,5 @@ def parse_csv(
         rows=rows,
         delimiter=delimiter,
         skipped_duplicate_rows=skipped_duplicate_rows,
+        person_attribute_conflicts=person_attribute_conflicts,
     )

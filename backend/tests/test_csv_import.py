@@ -130,11 +130,12 @@ def test_identical_repeated_company_rows_are_reported():
     assert parsed.skipped_duplicate_rows == 2
 
 
-def test_conflicting_person_attributes_are_not_silently_overwritten():
+def test_conflicting_person_attributes_preserve_links_and_use_last_row():
     content = b"SYNTHETIC_F,SYNTHETIC_U,CITY_NAME,RC_NAME\nf,a,One,R\nf,b,Two,R\n"
-    with pytest.raises(CsvValidationError) as error:
-        parse_csv(content, "persons", "utf-8-sig", None, 10)
-    assert "Conflicting geography" in error.value.errors[0]["message"]
+    parsed = parse_csv(content, "persons", "utf-8-sig", None, 10)
+    assert parsed.person_attribute_conflicts == 1
+    assert [(row["id"], row["company_id"]) for row in parsed.rows] == [("f", "a"), ("f", "b")]
+    assert parsed.rows[-1]["city"] == "Two"
 
 
 @pytest.fixture
