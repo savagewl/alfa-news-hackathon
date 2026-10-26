@@ -94,6 +94,10 @@ flowchart LR
     └── src/    api, auth, components, layout, pages, state
 ```
 
+Исходные репозитории:
+[бэкенд](https://github.com/ten00m/alfa-news-backend) и
+[фронтенд](https://github.com/savagewl/alpha-news-front).
+
 Подробности по каждой части: [backend/README.md](backend/README.md) (API, форматы CSV, настройки AI и RSS)
 и [frontend/README.md](frontend/README.md).
 
